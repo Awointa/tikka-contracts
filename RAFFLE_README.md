@@ -1,0 +1,209 @@
+# Raffle Contract System
+
+A comprehensive smart contract system for managing raffles on Ethereum, built with Solidity and Foundry.
+
+## Features
+
+### Core Functionality
+
+-   **Raffle Creation**: Create raffles with custom parameters
+-   **Multi-Token Support**: Use ETH or any ERC20 token for ticket purchases
+-   **Ticket Purchasing**: Buy single or multiple tickets with ETH or ERC20 tokens
+-   **Prize Management**: Support for ETH, ERC20 tokens, and ERC721 NFTs as prizes
+-   **Escrow System**: Secure prize holding until raffle completion
+-   **Winner Selection**: Platform owner can select winners
+-   **Automatic Prize Distribution**: Anyone can finalize raffles to transfer prizes to winners
+-   **Platform Fees**: Configurable service charge system
+
+### Raffle Parameters
+
+-   **Description**: Custom description for each raffle
+-   **End Time**: Unix timestamp when raffle ends
+-   **Max Tickets**: Maximum number of tickets that can be sold
+-   **Allow Multiple Tickets**: Whether users can buy multiple tickets
+-   **Ticket Price**: Price per ticket (in wei for ETH, or token units for ERC20)
+-   **Ticket Token**: Token to use for purchases (address(0) for ETH, otherwise ERC20 address)
+
+## Contract Functions
+
+### Raffle Management
+
+-   `createRaffle()` - Create a new raffle
+-   `getRaffleData()` - Get complete raffle information
+-   `isRaffleActive()` - Check if raffle is still active
+-   `getTotalRaffles()` - Get total number of raffles created
+
+### Ticket Operations
+
+-   `buyTicket()` - Buy a single ticket
+-   `buyMultipleTickets()` - Buy multiple tickets at once
+-   `getUserTicketsInRaffle()` - Get user's ticket count for a raffle
+-   `getUserTicketIds()` - Get all ticket IDs for a user
+-   `getTicketData()` - Get ticket information by ID
+-   `getRaffleTicketIds()` - Get all ticket IDs for a raffle
+
+### Winner Management
+
+-   `selectWinner()` - Select winner for a raffle (platform owner only)
+-   `withdrawWinnings()` - Withdraw prize money (winner only)
+-   `finalizeRaffle()` - Transfer prize to winner (anyone can call)
+
+### Prize Management
+
+-   `depositPrizeETH()` - Deposit ETH as prize (raffle creator only)
+-   `depositPrizeToken()` - Deposit ERC20 tokens as prize (raffle creator only)
+-   `depositPrizeNFT()` - Deposit ERC721 NFT as prize (raffle creator only)
+-   `getPrizeData()` - Get prize information for a raffle
+-   `hasPrizeDeposited()` - Check if prize has been deposited
+
+### Platform Management
+
+-   `setPlatformServiceCharge()` - Set service charge percentage (platform owner only)
+-   `getPlatformServiceCharge()` - Get current service charge
+-   `getContractBalance()` - Get total contract balance
+
+## Events
+
+-   `RaffleCreated` - Emitted when a new raffle is created
+-   `TicketPurchased` - Emitted when a ticket is purchased
+-   `WinnerSelected` - Emitted when a winner is selected
+-   `WinningsWithdrawn` - Emitted when winnings are withdrawn
+-   `PrizeDeposited` - Emitted when a prize is deposited
+-   `PrizeWithdrawn` - Emitted when a prize is transferred to winner
+-   `RaffleFinalized` - Emitted when a raffle is finalized
+
+## Usage Examples
+
+### Creating a Raffle
+
+```solidity
+// Create ETH raffle
+raffle.createRaffle(
+    "Weekly NFT Raffle",           // description
+    block.timestamp + 7 days,      // end time
+    100,                          // max tickets
+    true,                         // allow multiple tickets
+    0.1 ether,                    // ticket price
+    address(0)                    // use ETH for tickets
+);
+
+// Create ERC20 token raffle
+raffle.createRaffle(
+    "Token Raffle",               // description
+    block.timestamp + 7 days,      // end time
+    100,                          // max tickets
+    true,                         // allow multiple tickets
+    100 ether,                    // ticket price (100 tokens)
+    tokenAddress                  // use ERC20 token for tickets
+);
+```
+
+### Buying Tickets
+
+```solidity
+// Buy single ticket with ETH
+raffle.buyTicket{value: 0.1 ether}(raffleId);
+
+// Buy multiple tickets with ETH
+raffle.buyMultipleTickets{value: 0.3 ether}(raffleId, 3);
+
+// Buy tickets with ERC20 tokens (approve first)
+token.approve(address(raffle), 100 ether);
+raffle.buyTicket(raffleId); // No ETH needed for token raffles
+```
+
+### Depositing Prizes
+
+```solidity
+// Deposit ETH as prize
+raffle.depositPrizeETH{value: 1 ether}(raffleId);
+
+// Deposit ERC20 tokens as prize
+token.approve(address(raffle), 1000 ether);
+raffle.depositPrizeToken(raffleId, tokenAddress, 1000 ether);
+
+// Deposit NFT as prize
+nft.approve(address(raffle), tokenId);
+raffle.depositPrizeNFT(raffleId, nftAddress, tokenId);
+```
+
+### Selecting Winner and Finalizing
+
+```solidity
+// Platform owner selects winner
+raffle.selectWinner(raffleId, winningTicketId);
+
+// Anyone can finalize raffle to transfer prize to winner
+raffle.finalizeRaffle(raffleId);
+
+// Winner can also withdraw ticket sale proceeds (minus platform fee)
+raffle.withdrawWinnings(raffleId);
+```
+
+## Security Features
+
+-   **Access Control**: Only platform owner can select winners and set service charges
+-   **Time Validation**: Raffles must end in the future
+-   **Ticket Limits**: Enforces maximum ticket limits
+-   **Multiple Ticket Control**: Respects allowMultipleTickets setting
+-   **Winner Validation**: Only actual winners can withdraw prizes
+-   **Single Withdrawal**: Prevents double withdrawal of winnings
+
+## Platform Economics
+
+-   **Service Charge**: Configurable percentage (default 5%, max 20%)
+-   **Prize Distribution**: Winner gets total prize pool minus service charge
+-   **Platform Revenue**: Service charge goes to platform owner
+
+## Testing
+
+The contract includes comprehensive tests covering:
+
+-   Raffle creation with various parameters
+-   Ticket purchasing (single and multiple)
+-   Edge cases and error conditions
+-   Winner selection and withdrawal
+-   Platform fee calculations
+-   Complete raffle lifecycle
+
+Run tests with:
+
+```bash
+forge test --match-contract RaffleTest
+```
+
+## Deployment
+
+Deploy the contract using the provided script:
+
+```bash
+forge script script/DeployRaffle.s.sol --rpc-url <RPC_URL> --private-key <PRIVATE_KEY> --broadcast
+```
+
+## Contract Architecture
+
+### Data Structures
+
+-   `RaffleData`: Complete raffle information
+-   `Ticket`: Individual ticket data
+-   Mappings for efficient data retrieval
+
+### State Management
+
+-   Raffle lifecycle tracking
+-   Ticket ownership and status
+-   Winner selection and withdrawal status
+-   Platform configuration
+
+## Future Enhancements
+
+-   Random winner selection using Chainlink VRF
+-   Automated raffle ending
+-   Raffle categories and filtering
+-   Advanced analytics and reporting
+-   Multi-token support
+-   Governance features
+
+## License
+
+MIT License - see LICENSE file for details.
