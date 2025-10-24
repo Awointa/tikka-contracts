@@ -4,8 +4,9 @@ pragma solidity ^0.8.13;
 import "forge-std/console.sol";
 import "forge-std/interfaces/IERC20.sol";
 import "forge-std/interfaces/IERC721.sol";
+import "./MockVRF.sol";
 
-contract Raffle {
+contract Raffle is VRFConsumerBaseV2Plus {
     // Events
     event RaffleCreated(uint256 indexed raffleId, address indexed creator, string description, uint256 endTime, uint256 maxTickets, bool allowMultipleTickets);
     event TicketPurchased(uint256 indexed raffleId, address indexed buyer, uint256 ticketId, uint256 amount);
@@ -14,6 +15,8 @@ contract Raffle {
     event PrizeDeposited(uint256 indexed raffleId, address indexed depositor, address token, uint256 tokenId, uint256 amount);
     event PrizeWithdrawn(uint256 indexed raffleId, address indexed winner, address token, uint256 tokenId, uint256 amount);
     event RaffleFinalized(uint256 indexed raffleId, address indexed winner);
+    event RandomWinnerRequested(uint256 indexed raffleId, uint256 indexed requestId);
+    event VRFConfigurationUpdated(uint64 subscriptionId, bytes32 keyHash, uint32 callbackGasLimit, uint16 requestConfirmations);
 
     // Structs
     struct RaffleData {
@@ -55,6 +58,17 @@ contract Raffle {
     uint256 public platformServiceCharge = 5; // 5% service charge
     address public platformOwner;
     
+    // VRF v2.5 variables
+    uint64 public s_subscriptionId;
+    bytes32 public s_keyHash;
+    uint32 public s_callbackGasLimit;
+    uint16 public s_requestConfirmations;
+    uint32 public s_numWords = 1;
+    
+    // VRF request tracking
+    mapping(uint256 => uint256) public requestIdToRaffleId; // requestId => raffleId
+    mapping(uint256 => bool) public pendingVRFRequests; // raffleId => has pending request
+    
     // Mappings
     mapping(uint256 => RaffleData) public raffles;
     mapping(uint256 => PrizeData) public prizes; // raffleId => prize data
@@ -80,8 +94,18 @@ contract Raffle {
         _;
     }
 
-    constructor() {
+    constructor(
+        address _vrfCoordinator,
+        uint64 _subscriptionId,
+        bytes32 _keyHash,
+        uint32 _callbackGasLimit,
+        uint16 _requestConfirmations
+    ) VRFConsumerBaseV2Plus(_vrfCoordinator) {
         platformOwner = msg.sender;
+        s_subscriptionId = _subscriptionId;
+        s_keyHash = _keyHash;
+        s_callbackGasLimit = _callbackGasLimit;
+        s_requestConfirmations = _requestConfirmations;
     }
 
     /**
@@ -264,24 +288,66 @@ contract Raffle {
     }
 
     /**
-     * @dev Select winner for a raffle (only platform owner for now)
+     * @dev Request random winner selection for a raffle using Chainlink VRF
      * @param _raffleId ID of the raffle
-     * @param _winningTicketId ID of the winning ticket
      */
-    function selectWinner(uint256 _raffleId, uint256 _winningTicketId) external onlyPlatformOwner raffleExists(_raffleId) {
+    function requestRandomWinner(uint256 _raffleId) external onlyPlatformOwner raffleExists(_raffleId) {
         RaffleData storage raffle = raffles[_raffleId];
         
         require(block.timestamp >= raffle.endTime, "Raffle has not ended yet");
         require(raffle.isActive, "Raffle is not active");
-        require(tickets[_winningTicketId].raffleId == _raffleId, "Invalid winning ticket");
-        require(tickets[_winningTicketId].owner != address(0), "Invalid ticket owner");
+        require(raffleTickets[_raffleId].length > 0, "No tickets sold");
+        require(!pendingVRFRequests[_raffleId], "VRF request already pending");
 
+        // Mark that we have a pending VRF request for this raffle
+        pendingVRFRequests[_raffleId] = true;
+
+        // Request random words from VRF
+        MockVRFCoordinatorV2Plus.RandomWordsRequest memory request = MockVRFCoordinatorV2Plus.RandomWordsRequest({
+            keyHash: s_keyHash,
+            subId: s_subscriptionId,
+            requestConfirmations: s_requestConfirmations,
+            callbackGasLimit: s_callbackGasLimit,
+            numWords: s_numWords,
+            extraArgs: VRFV2PlusClient._argsToBytes(VRFV2PlusClient.ExtraArgsV1({nativePayment: true}))
+        });
+        
+        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
+
+        // Track the request
+        requestIdToRaffleId[requestId] = _raffleId;
+
+        emit RandomWinnerRequested(_raffleId, requestId);
+    }
+
+    /**
+     * @dev Callback function called by VRF Coordinator when random words are fulfilled
+     * @param requestId The request ID from VRF
+     * @param randomWords Array of random words returned by VRF
+     */
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        uint256 raffleId = requestIdToRaffleId[requestId];
+        require(raffleId > 0, "Invalid request ID");
+        require(pendingVRFRequests[raffleId], "No pending request for this raffle");
+
+        RaffleData storage raffle = raffles[raffleId];
+        require(raffle.isActive, "Raffle is not active");
+
+        // Clear pending request
+        pendingVRFRequests[raffleId] = false;
+
+        // Select winner using random number
+        uint256[] memory ticketIds = raffleTickets[raffleId];
+        uint256 randomIndex = randomWords[0] % ticketIds.length;
+        uint256 winningTicketId = ticketIds[randomIndex];
+
+        // Set winner
         raffle.isActive = false;
-        raffle.winner = tickets[_winningTicketId].owner;
-        raffle.winningTicketId = _winningTicketId;
-        tickets[_winningTicketId].isWinner = true;
+        raffle.winner = tickets[winningTicketId].owner;
+        raffle.winningTicketId = winningTicketId;
+        tickets[winningTicketId].isWinner = true;
 
-        emit WinnerSelected(_raffleId, raffle.winner, _winningTicketId);
+        emit WinnerSelected(raffleId, raffle.winner, winningTicketId);
     }
 
     /**
@@ -912,5 +978,49 @@ contract Raffle {
      */
     function getPlatformOwner() external view returns (address) {
         return platformOwner;
+    }
+
+    // ============ VRF FUNCTIONS ============
+
+    /**
+     * @dev Configure VRF parameters (only platform owner)
+     * @param _subscriptionId VRF subscription ID
+     * @param _keyHash VRF key hash
+     * @param _callbackGasLimit Gas limit for VRF callback
+     * @param _requestConfirmations Number of confirmations for VRF request
+     */
+    function configureVRF(
+        uint64 _subscriptionId,
+        bytes32 _keyHash,
+        uint32 _callbackGasLimit,
+        uint16 _requestConfirmations
+    ) external onlyPlatformOwner {
+        s_subscriptionId = _subscriptionId;
+        s_keyHash = _keyHash;
+        s_callbackGasLimit = _callbackGasLimit;
+        s_requestConfirmations = _requestConfirmations;
+
+        emit VRFConfigurationUpdated(_subscriptionId, _keyHash, _callbackGasLimit, _requestConfirmations);
+    }
+
+    /**
+     * @dev Get VRF configuration
+     */
+    function getVRFConfiguration() external view returns (
+        uint64 subscriptionId,
+        bytes32 keyHash,
+        uint32 callbackGasLimit,
+        uint16 requestConfirmations,
+        uint32 numWords
+    ) {
+        return (s_subscriptionId, s_keyHash, s_callbackGasLimit, s_requestConfirmations, s_numWords);
+    }
+
+    /**
+     * @dev Check if a raffle has a pending VRF request
+     * @param _raffleId ID of the raffle
+     */
+    function hasPendingVRFRequest(uint256 _raffleId) external view raffleExists(_raffleId) returns (bool) {
+        return pendingVRFRequests[_raffleId];
     }
 }

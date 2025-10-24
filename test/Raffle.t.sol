@@ -4,11 +4,13 @@ pragma solidity ^0.8.13;
 import "forge-std/Test.sol";
 import "../src/Raffle.sol";
 import "../src/MockToken.sol";
+import "../src/MockVRF.sol";
 
 contract RaffleTest is Test {
     Raffle public raffle;
     MockERC20 public token;
     MockERC721 public nft;
+    MockVRFCoordinatorV2Plus public mockVRFCoordinator;
     address public owner;
     address public user1;
     address public user2;
@@ -17,10 +19,24 @@ contract RaffleTest is Test {
     // Fallback function to receive ETH
     receive() external payable {}
 
+    // Helper function to request and fulfill random words
+    function requestAndFulfillRandomWinner(uint256 _raffleId) internal {
+        // Request random winner
+        raffle.requestRandomWinner(_raffleId);
+        
+        // Get the request ID from the mock coordinator
+        uint256 requestId = mockVRFCoordinator.nextRequestId() - 1;
+        
+        // Generate random words and fulfill the request
+        uint256[] memory randomWords = mockVRFCoordinator.generateRandomWords(1);
+        mockVRFCoordinator.fulfillRandomWords(requestId, randomWords);
+    }
+
     event RaffleCreated(uint256 indexed raffleId, address indexed creator, string description, uint256 endTime, uint256 maxTickets, bool allowMultipleTickets);
     event TicketPurchased(uint256 indexed raffleId, address indexed buyer, uint256 ticketId, uint256 amount);
     event WinnerSelected(uint256 indexed raffleId, address indexed winner, uint256 ticketId);
     event WinningsWithdrawn(uint256 indexed raffleId, address indexed winner, uint256 amount);
+    event RandomWinnerRequested(uint256 indexed raffleId, uint256 indexed requestId);
 
     function setUp() public {
         owner = address(this);
@@ -28,7 +44,18 @@ contract RaffleTest is Test {
         user2 = makeAddr("user2");
         user3 = makeAddr("user3");
         
-        raffle = new Raffle();
+        // Deploy mock VRF coordinator
+        mockVRFCoordinator = new MockVRFCoordinatorV2Plus();
+        
+        // Deploy raffle with VRF parameters
+        raffle = new Raffle(
+            address(mockVRFCoordinator),
+            1, // subscription ID
+            bytes32(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef), // key hash
+            200000, // callback gas limit
+            3 // request confirmations
+        );
+        
         token = new MockERC20("Test Token", "TEST", 18);
         nft = new MockERC721("Test NFT", "TNFT");
         
@@ -201,36 +228,42 @@ contract RaffleTest is Test {
         // Fast forward time to end raffle
         vm.warp(block.timestamp + 2 days);
         
-        // Select winner
+        // Request random winner
         vm.expectEmit(true, true, true, true);
-        emit WinnerSelected(1, user1, 1);
-        raffle.selectWinner(1, 1);
+        emit RandomWinnerRequested(1, 1);
+        raffle.requestRandomWinner(1);
+        
+        // Check that there's a pending VRF request
+        assertTrue(raffle.hasPendingVRFRequest(1));
+        
+        // Fulfill the random words request
+        uint256[] memory randomWords = mockVRFCoordinator.generateRandomWords(1);
+        mockVRFCoordinator.fulfillRandomWords(1, randomWords);
         
         // Check raffle data
         Raffle.RaffleData memory raffleData = raffle.getRaffleData(1);
-        assertEq(raffleData.winner, user1);
-        assertEq(raffleData.winningTicketId, 1);
+        assertTrue(raffleData.winner != address(0));
+        assertTrue(raffleData.winningTicketId > 0);
         assertFalse(raffleData.isActive);
         
-        // Check ticket data
-        Raffle.Ticket memory ticket = raffle.getTicketData(1);
-        assertTrue(ticket.isWinner);
+        // Check that the pending request is cleared
+        assertFalse(raffle.hasPendingVRFRequest(1));
     }
 
     function testSelectWinnerInvalidParams() public {
         // Create raffle
         raffle.createRaffle("Test Raffle", block.timestamp + 1 days, 100, true, 0.1 ether, address(0));
         
-        // Try to select winner before raffle ends
+        // Try to request random winner before raffle ends
         vm.expectRevert("Raffle has not ended yet");
-        raffle.selectWinner(1, 1);
+        raffle.requestRandomWinner(1);
         
         // Fast forward time
         vm.warp(block.timestamp + 2 days);
         
-        // Try to select winner with invalid ticket
-        vm.expectRevert("Invalid winning ticket");
-        raffle.selectWinner(1, 999);
+        // Try to request random winner with no tickets
+        vm.expectRevert("No tickets sold");
+        raffle.requestRandomWinner(1);
     }
 
     function testWithdrawWinnings() public {
@@ -244,24 +277,27 @@ contract RaffleTest is Test {
         vm.prank(user2);
         raffle.buyTicket{value: 0.1 ether}(1);
         
-        // Fast forward time and select winner
+        // Fast forward time and select winner using VRF
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1);
+        requestAndFulfillRandomWinner(1);
         
-        uint256 initialBalance = user1.balance;
+        // Get the winner
+        Raffle.RaffleData memory raffleData = raffle.getRaffleData(1);
+        address winner = raffleData.winner;
+        uint256 initialBalance = winner.balance;
         
         // Withdraw winnings
-        vm.prank(user1);
+        vm.prank(winner);
         vm.expectEmit(true, true, true, true);
-        emit WinningsWithdrawn(1, user1, 0.19 ether); // 0.2 ether - 5% service charge = 0.19 ether
+        emit WinningsWithdrawn(1, winner, 0.19 ether); // 0.2 ether - 5% service charge = 0.19 ether
         raffle.withdrawWinnings(1);
         
         // Check balance increase
-        assertEq(user1.balance, initialBalance + 0.19 ether);
+        assertEq(winner.balance, initialBalance + 0.19 ether);
         
-        // Check raffle data
-        Raffle.RaffleData memory raffleData = raffle.getRaffleData(1);
-        assertTrue(raffleData.winningsWithdrawn);
+        // Check raffle data - get fresh data after withdrawal
+        Raffle.RaffleData memory updatedRaffleData = raffle.getRaffleData(1);
+        assertTrue(updatedRaffleData.winningsWithdrawn);
     }
 
     function testWithdrawWinningsInvalidParams() public {
@@ -272,9 +308,13 @@ contract RaffleTest is Test {
         vm.prank(user1);
         raffle.buyTicket{value: 0.1 ether}(1);
         
-        // Fast forward time and select winner
+        // Fast forward time and select winner using VRF
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1);
+        requestAndFulfillRandomWinner(1);
+        
+        // Get the winner
+        Raffle.RaffleData memory raffleData = raffle.getRaffleData(1);
+        address winner = raffleData.winner;
         
         // Try to withdraw as non-winner
         vm.prank(user2);
@@ -282,11 +322,11 @@ contract RaffleTest is Test {
         raffle.withdrawWinnings(1);
         
         // Withdraw as winner
-        vm.prank(user1);
+        vm.prank(winner);
         raffle.withdrawWinnings(1);
         
         // Try to withdraw again
-        vm.prank(user1);
+        vm.prank(winner);
         vm.expectRevert("Winnings already withdrawn");
         raffle.withdrawWinnings(1);
     }
@@ -374,17 +414,20 @@ contract RaffleTest is Test {
         Raffle.RaffleData memory raffleData = raffle.getRaffleData(1);
         assertEq(raffleData.totalTicketsSold, 6);
         
-        // Fast forward time and select winner
+        // Fast forward time and select winner using VRF
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1); // user1's first ticket wins
+        requestAndFulfillRandomWinner(1);
         
-        // Winner withdraws winnings
-        uint256 initialBalance = user1.balance;
-        vm.prank(user1);
+        // Get the winner and withdraw winnings
+        raffleData = raffle.getRaffleData(1);
+        address winner = raffleData.winner;
+        uint256 initialBalance = winner.balance;
+        
+        vm.prank(winner);
         raffle.withdrawWinnings(1);
         
         // Check winnings (6 tickets * 0.1 ether = 0.6 ether, minus 5% service charge = 0.57 ether)
-        assertEq(user1.balance, initialBalance + 0.57 ether);
+        assertEq(winner.balance, initialBalance + 0.57 ether);
     }
 
     // New token functionality tests
@@ -525,9 +568,9 @@ contract RaffleTest is Test {
         vm.prank(user2);
         raffle.buyTicket{value: 0.1 ether}(1);
         
-        // Fast forward time and select winner
+        // Fast forward time and select winner using VRF
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1);
+        requestAndFulfillRandomWinner(1);
         
         // Finalize raffle
         raffle.finalizeRaffle(1);
@@ -555,9 +598,9 @@ contract RaffleTest is Test {
         vm.prank(user2);
         raffle.buyTicket{value: 0.1 ether}(1);
         
-        // Fast forward time and select winner
+        // Fast forward time and select winner using VRF
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1);
+        requestAndFulfillRandomWinner(1);
         
         // Finalize raffle
         raffle.finalizeRaffle(1);
@@ -585,9 +628,9 @@ contract RaffleTest is Test {
         
         uint256 initialBalance = user2.balance;
         
-        // Fast forward time and select winner
+        // Fast forward time and select winner using VRF
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1);
+        requestAndFulfillRandomWinner(1);
         
         // Finalize raffle
         raffle.finalizeRaffle(1);
@@ -635,7 +678,7 @@ contract RaffleTest is Test {
         
         // Try to finalize without prize
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1);
+        requestAndFulfillRandomWinner(1);
         vm.expectRevert("No prize deposited");
         raffle.finalizeRaffle(1);
     }
@@ -824,7 +867,7 @@ contract RaffleTest is Test {
         
         // Fast forward and finalize one raffle
         vm.warp(block.timestamp + 3 days);
-        raffle.selectWinner(2, 2); // Use ticket ID 2 (user2's ticket)
+        requestAndFulfillRandomWinner(2);
         raffle.finalizeRaffle(2);
         
         // Get platform statistics
@@ -913,8 +956,8 @@ contract RaffleTest is Test {
         
         // Fast forward and select winners
         vm.warp(block.timestamp + 2 days);
-        raffle.selectWinner(1, 1);
-        raffle.selectWinner(2, 2);
+        requestAndFulfillRandomWinner(1);
+        requestAndFulfillRandomWinner(2);
         
         // Get winners
         (uint256[] memory raffleIds, address[] memory winners) = raffle.getRaffleWinners();

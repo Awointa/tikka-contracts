@@ -204,6 +204,45 @@ forge script script/DeployRaffle.s.sol --rpc-url <RPC_URL> --private-key <PRIVAT
 -   Multi-token support
 -   Governance features
 
+## Deployment
+
+### Base Sepolia Testnet
+
+The contract is configured for deployment on Base Sepolia testnet with the following VRF parameters:
+
+-   **VRF Coordinator**: `0x5C210eF41CD1a72de73bF76eC39637bB0d3d7BEE`
+-   **LINK Token**: `0xE4aB69C077896252FAFBD49EFD26B5D171A32410`
+-   **Key Hash**: `0x9e1344a1247c8a1785d0a4681a27152bffdb43666ae5bf7d14d24a5efd44bf71`
+
+### Deployment Steps
+
+1. **Setup Environment**:
+
+    ```bash
+    # Create .env file
+    PRIVATE_KEY=your_private_key_here
+    BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+    ETHERSCAN_API_KEY=your_etherscan_api_key_here
+    ```
+
+2. **Create VRF Subscription**:
+
+    - Go to [Chainlink VRF Subscription Manager](https://vrf.chain.link/base-sepolia)
+    - Create subscription and fund with LINK tokens
+    - Update `subscriptionId` in deployment script
+
+3. **Deploy Contract**:
+
+    ```bash
+    forge script script/DeployRaffle.s.sol --rpc-url $BASE_SEPOLIA_RPC_URL --broadcast --verify
+    ```
+
+4. **Add Consumer**:
+    - Add deployed contract as consumer to VRF subscription
+    - This enables the contract to request random numbers
+
+See `DEPLOYMENT_GUIDE.md` for detailed deployment instructions.
+
 ## License
 
 MIT License - see LICENSE file for details.
