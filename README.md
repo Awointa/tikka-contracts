@@ -10,7 +10,7 @@ Tikka is a decentralized raffle platform built on Stellar using Soroban smart co
 
 ### **🎲 On-Chain Winner Selection (Demo)**
 
--   Deterministic winner selection derived from ledger data
+-   Deterministic winner selection derived from ledger data (timestamp + sequence)
 -   Simple and transparent process for a demo contract
 -   Designed for clarity, not production-grade randomness
 
@@ -18,12 +18,12 @@ Tikka is a decentralized raffle platform built on Stellar using Soroban smart co
 
 -   **Ticket Purchases**: Any Stellar asset contract
 -   **Prizes**: Same asset used for ticket purchases
--   **Flexible Pricing**: Set ticket prices per raffle
+-   **Flexible Pricing**: Set ticket prices and prize amount per raffle
 
 ### **🔒 Escrowed Prizes**
 
 -   Prizes are held in the smart contract until finalization
--   Winners claim prizes after raffle completion
+-   Winners claim prizes after the raffle ends
 
 ### **📊 Basic Raffle Analytics**
 
@@ -43,6 +43,7 @@ Creator → Create Raffle → Set Parameters
     -   Maximum ticket count
     -   Ticket price and payment asset
     -   Whether multiple tickets per person are allowed
+    -   Prize amount (in the same payment asset)
 
 ### **2. Prize Escrow**
 
@@ -61,6 +62,7 @@ Participants → Buy Tickets → Contract Validation → Ticket Issuance
 
 -   Users purchase tickets with the raffle asset
 -   Contract validates payment and issues tickets
+-   One ticket equals one entry in the raffle
 
 ### **4. Winner Selection**
 
@@ -79,6 +81,30 @@ Winner Selected → Claim Prize
 
 -   Winners claim their prizes
 
+### **Raffle Flow Diagram**
+
+```mermaid
+flowchart TD
+    Creator[Creator]
+    Buyer[TicketBuyer]
+    Token[StellarAssetContract]
+    Raffle[RaffleContract]
+
+    Creator -->|"create_raffle()"| Raffle
+    Creator -->|"deposit_prize()"| Token
+    Token -->|"transfer(prize)"| Raffle
+
+    Buyer -->|"buy_ticket()"| Token
+    Token -->|"transfer(ticket_price)"| Raffle
+
+    Raffle -->|"finalize_raffle()"| Raffle
+    Raffle -->|"select_winner(ledger_data)"| Raffle
+
+    Buyer -->|"claim_prize()"| Raffle
+    Raffle -->|"transfer(prize)"| Token
+    Token -->|"transfer(prize)"| Buyer
+```
+
 ## 🔧 Technical Architecture
 
 ### **Smart Contract Stack**
@@ -92,9 +118,12 @@ Winner Selected → Claim Prize
 
 ```rust
 pub fn create_raffle(... ) -> u64;
+pub fn deposit_prize(... );
 pub fn buy_ticket(... ) -> u32;
 pub fn finalize_raffle(... ) -> Address;
 pub fn claim_prize(... );
+pub fn get_raffle(... ) -> Raffle;
+pub fn get_tickets(... ) -> Vec<Address>;
 ```
 
 ### **Data Structures**
@@ -117,6 +146,12 @@ pub struct Raffle {
     pub winner: Option<Address>,
 }
 ```
+
+### **Contract Constraints (Demo)**
+
+-   Only one winner per raffle
+-   Prize and ticket payments use the same Stellar asset
+-   Winner selection is deterministic and not production-grade randomness
 
 ## 🌐 Deployed Contracts
 
@@ -145,25 +180,16 @@ cargo build -p hello-world
 
 ## 🛠️ Development
 
-### **Local Development**
+For local setup, build, and test workflows, see `DEVELOPMENT.md`.
 
-```bash
-# Clone repository
-git clone https://github.com/your-org/tikka-contracts.git
-cd tikka-contracts
+## 🤝 Contributing
 
-# Run tests
-cargo test -p hello-world
-```
+See `CONTRIBUTING.md` for contribution guidelines and PR expectations.
 
 ## 📚 Documentation
 
 -   **Stellar Soroban**: https://developers.stellar.org/docs/build/smart-contracts/overview
 -   **Soroban Examples**: https://github.com/stellar/soroban-examples
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our contributing guidelines and code of conduct.
 
 ## 📄 License
 
