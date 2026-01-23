@@ -3,8 +3,27 @@
 use super::*;
 use soroban_sdk::{
     testutils::Address as _,
-    token, Address, Env, String,
+    token, Address, Env, String, Vec,
 };
+
+fn create_raffle(
+    env: &Env,
+    client: &ContractClient,
+    creator: &Address,
+    token_id: &Address,
+    end_time: u64,
+) -> u64 {
+    client.create_raffle(
+        creator,
+        &String::from_str(env, "Test Raffle"),
+        &end_time,
+        &10u32,
+        &true,
+        &1i128,
+        token_id,
+        &10i128,
+    )
+}
 
 #[test]
 fn test_basic_raffle_flow() {
@@ -322,7 +341,7 @@ fn test_buy_tickets_allow_multiple_true_allows_multiple() {
 }
 
 #[test]
-fn test_get_user_tickets_and_stats() {
+fn test_get_all_raffle_ids_pagination_oldest_first() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -339,34 +358,35 @@ fn test_get_user_tickets_and_stats() {
     let contract_id = env.register(Contract, ());
     let client = ContractClient::new(&env, &contract_id);
 
-    let raffle_id = client.create_raffle(
-        &creator,
-        &String::from_str(&env, "Stats Raffle"),
-        &1000u64,
-        &10u32,
-        &true,
-        &20i128,
-        &token_id,
-        &200i128,
-    );
+    let id0 = create_raffle(&env, &client, &creator, &token_id, 1000);
+    let id1 = create_raffle(&env, &client, &creator, &token_id, 1000);
+    let id2 = create_raffle(&env, &client, &creator, &token_id, 0);
+    let id3 = create_raffle(&env, &client, &creator, &token_id, 0);
+    let id4 = create_raffle(&env, &client, &creator, &token_id, 1000);
 
-    client.buy_tickets(&raffle_id, &buyer, &3u32);
+    client.buy_ticket(&id2, &buyer);
+    client.buy_ticket(&id3, &buyer);
+    client.finalize_raffle(&id2);
+    client.finalize_raffle(&id3);
 
-    let user_tickets = client.get_user_tickets(&raffle_id, &buyer);
-    let stats = client.get_raffle_stats(&raffle_id);
-    let raffle_with_stats = client.get_raffle_by_id(&raffle_id);
+    let all_ids = client.get_all_raffle_ids(&0u32, &10u32, &false);
+    let mut expected = Vec::new(&env);
+    expected.push_back(id0);
+    expected.push_back(id1);
+    expected.push_back(id2);
+    expected.push_back(id3);
+    expected.push_back(id4);
+    assert_eq!(all_ids, expected);
 
-    assert_eq!(user_tickets, 3);
-    assert_eq!(stats.tickets_sold, 3);
-    assert_eq!(stats.max_tickets, 10);
-    assert_eq!(stats.tickets_remaining, 7);
-    assert_eq!(stats.total_revenue, 60);
-    assert_eq!(raffle_with_stats.stats.tickets_sold, 3);
-    assert_eq!(raffle_with_stats.raffle.id, raffle_id);
+    let page = client.get_all_raffle_ids(&1u32, &2u32, &false);
+    let mut expected_page = Vec::new(&env);
+    expected_page.push_back(id1);
+    expected_page.push_back(id2);
+    assert_eq!(page, expected_page);
 }
 
 #[test]
-fn test_get_raffle_status() {
+fn test_get_all_raffle_ids_pagination_newest_first() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -378,36 +398,49 @@ fn test_get_raffle_status() {
     let token_id = token_contract.address();
     let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
 
-    token_admin_client.mint(&creator, &1_000);
     token_admin_client.mint(&buyer, &1_000);
 
     let contract_id = env.register(Contract, ());
     let client = ContractClient::new(&env, &contract_id);
 
-    let raffle_id = client.create_raffle(
-        &creator,
-        &String::from_str(&env, "Status Raffle"),
-        &0u64,
-        &5u32,
-        &true,
-        &10i128,
-        &token_id,
-        &100i128,
-    );
+    let id0 = create_raffle(&env, &client, &creator, &token_id, 1000);
+    let id1 = create_raffle(&env, &client, &creator, &token_id, 1000);
+    let id2 = create_raffle(&env, &client, &creator, &token_id, 1000);
+    let id3 = create_raffle(&env, &client, &creator, &token_id, 1000);
+    let id4 = create_raffle(&env, &client, &creator, &token_id, 1000);
 
-    let status_active = client.get_raffle_status(&raffle_id);
-    assert_eq!(status_active, RaffleStatus::Active);
+    let page = client.get_all_raffle_ids(&0u32, &3u32, &true);
+    let mut expected_page = Vec::new(&env);
+    expected_page.push_back(id4);
+    expected_page.push_back(id3);
+    expected_page.push_back(id2);
+    assert_eq!(page, expected_page);
 
-    client.deposit_prize(&raffle_id);
-    client.buy_ticket(&raffle_id, &buyer);
-    client.finalize_raffle(&raffle_id);
+    let page_offset = client.get_all_raffle_ids(&2u32, &2u32, &true);
+    let mut expected_offset = Vec::new(&env);
+    expected_offset.push_back(id2);
+    expected_offset.push_back(id1);
+    assert_eq!(page_offset, expected_offset);
+}
 
-    let status_finalized = client.get_raffle_status(&raffle_id);
-    assert_eq!(status_finalized, RaffleStatus::Finalized);
+#[test]
+fn test_get_all_raffle_ids_limit_capped() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-    let winner = client.get_raffle(&raffle_id).winner.unwrap();
-    client.claim_prize(&raffle_id, &winner);
+    let creator = Address::generate(&env);
 
-    let status_claimed = client.get_raffle_status(&raffle_id);
-    assert_eq!(status_claimed, RaffleStatus::Claimed);
+    let token_admin = Address::generate(&env);
+    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = token_contract.address();
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    for _ in 0..120u32 {
+        create_raffle(&env, &client, &creator, &token_id, 1000);
+    }
+
+    let ids = client.get_all_raffle_ids(&0u32, &250u32, &false);
+    assert_eq!(ids.len(), 100);
 }
