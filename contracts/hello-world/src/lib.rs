@@ -58,6 +58,34 @@ pub struct TicketPurchased {
     pub timestamp: u64,
 }
 
+/// Pagination metadata for list queries
+#[derive(Clone)]
+#[contracttype]
+pub struct PaginationMeta {
+    pub total: u32,
+    pub offset: u32,
+    pub limit: u32,
+    pub has_more: bool,
+}
+
+/// Paginated result for raffle ID queries
+#[derive(Clone)]
+#[contracttype]
+pub struct PaginatedRaffleIds {
+    pub data: Vec<u64>,
+    pub meta: PaginationMeta,
+}
+
+/// Paginated result for ticket (address) queries
+#[derive(Clone)]
+#[contracttype]
+pub struct PaginatedTickets {
+    pub data: Vec<Address>,
+    pub meta: PaginationMeta,
+}
+
+const MAX_PAGE_LIMIT: u32 = 100;
+
 fn read_raffle(env: &Env, raffle_id: u64) -> Raffle {
     env.storage()
         .persistent()
@@ -130,7 +158,7 @@ fn add_active_raffle(env: &Env, raffle_id: u64) {
 }
 
 fn remove_active_raffle(env: &Env, raffle_id: u64) {
-    let mut active_raffles = read_active_raffles(env);
+    let active_raffles = read_active_raffles(env);
     let mut new_active = Vec::new(env);
     for i in 0..active_raffles.len() {
         let id = active_raffles.get(i).unwrap();
@@ -308,80 +336,80 @@ impl Contract {
         raffle.tickets_sold
     }
 
-    pub fn buy_tickets(env: Env, raffle_id: u64, buyer: Address, quantity: u32) -> u32 {
-        buyer.require_auth();
-        let mut raffle = read_raffle(&env, raffle_id);
+    // pub fn buy_tickets(env: Env, raffle_id: u64, buyer: Address, quantity: u32) -> u32 {
+    //     buyer.require_auth();
+    //     let mut raffle = read_raffle(&env, raffle_id);
         
-        // Validate quantity
-        if quantity == 0 {
-            panic!("quantity_zero");
-        }
+    //     // Validate quantity
+    //     if quantity == 0 {
+    //         panic!("quantity_zero");
+    //     }
         
-        if !raffle.is_active {
-            panic!("raffle_inactive");
-        }
-        if env.ledger().timestamp() > raffle.end_time {
-            panic!("raffle_ended");
-        }
+    //     if !raffle.is_active {
+    //         panic!("raffle_inactive");
+    //     }
+    //     if env.ledger().timestamp() > raffle.end_time {
+    //         panic!("raffle_ended");
+    //     }
         
-        // Check if we have enough tickets available
-        let remaining_tickets = raffle.max_tickets - raffle.tickets_sold;
-        if quantity > remaining_tickets {
-            panic!("insufficient_tickets");
-        }
+    //     // Check if we have enough tickets available
+    //     let remaining_tickets = raffle.max_tickets - raffle.tickets_sold;
+    //     if quantity > remaining_tickets {
+    //         panic!("insufficient_tickets");
+    //     }
 
-        let current_count = read_ticket_count(&env, raffle_id, &buyer);
-        if !raffle.allow_multiple && current_count > 0 {
-            panic!("multiple_tickets_not_allowed");
-        }
+    //     let current_count = read_ticket_count(&env, raffle_id, &buyer);
+    //     if !raffle.allow_multiple && current_count > 0 {
+    //         panic!("multiple_tickets_not_allowed");
+    //     }
 
-        // Calculate total payment
-        let total_payment = raffle.ticket_price
-            .checked_mul(quantity as i128)
-            .unwrap_or_else(|| panic!("payment_overflow"));
+    //     // Calculate total payment
+    //     let total_payment = raffle.ticket_price
+    //         .checked_mul(quantity as i128)
+    //         .unwrap_or_else(|| panic!("payment_overflow"));
 
-        // Transfer tokens for all tickets
-        let token_client = token::Client::new(&env, &raffle.payment_token);
-        let contract_address = env.current_contract_address();
-        token_client.transfer(&buyer, &contract_address, &total_payment);
+    //     // Transfer tokens for all tickets
+    //     let token_client = token::Client::new(&env, &raffle.payment_token);
+    //     let contract_address = env.current_contract_address();
+    //     token_client.transfer(&buyer, &contract_address, &total_payment);
 
-        // Generate ticket IDs (1-indexed, sequential)
-        let start_ticket_id = raffle.tickets_sold + 1;
-        let mut ticket_ids = Vec::new(&env);
-        for i in 0..quantity {
-            ticket_ids.push_back(start_ticket_id + i);
-        }
+    //     // Generate ticket IDs (1-indexed, sequential)
+    //     let start_ticket_id = raffle.tickets_sold + 1;
+    //     let mut ticket_ids = Vec::new(&env);
+    //     for i in 0..quantity {
+    //         ticket_ids.push_back(start_ticket_id + i);
+    //     }
 
-        // Update tickets list (add buyer address for each ticket)
-        let mut tickets = read_tickets(&env, raffle_id);
-        for _ in 0..quantity {
-            tickets.push_back(buyer.clone());
-        }
-        write_tickets(&env, raffle_id, &tickets);
+    //     // Update tickets list (add buyer address for each ticket)
+    //     let mut tickets = read_tickets(&env, raffle_id);
+    //     for _ in 0..quantity {
+    //         tickets.push_back(buyer.clone());
+    //     }
+    //     write_tickets(&env, raffle_id, &tickets);
 
-        // Update raffle state
-        raffle.tickets_sold += quantity;
-        write_ticket_count(&env, raffle_id, &buyer, current_count + quantity);
-        write_raffle(&env, &raffle);
+    //     // Update raffle state
+    //     raffle.tickets_sold += quantity;
+    //     write_ticket_count(&env, raffle_id, &buyer, current_count + quantity);
+    //     write_raffle(&env, &raffle);
 
-        // Get timestamp
-        let timestamp = env.ledger().timestamp();
+    //     // Get timestamp
+    //     let timestamp = env.ledger().timestamp();
 
-        // Emit TicketPurchased event with all ticket IDs
-        env.events().publish(
-            (symbol_short!("TktPurch"),),
-            TicketPurchased {
-                raffle_id,
-                buyer: buyer.clone(),
-                ticket_ids,
-                quantity,
-                total_paid: total_payment,
-                timestamp,
-            },
-        );
+    //     // Emit TicketPurchased event with all ticket IDs
+    //     env.events().publish(
+    //         (symbol_short!("TktPurch"),),
+    //         TicketPurchased {
+    //             raffle_id,
+    //             buyer: buyer.clone(),
+    //             ticket_ids,
+    //             quantity,
+    //             total_paid: total_payment,
+    //             timestamp,
+    //         },
+    //     );
 
-        raffle.tickets_sold
-    }
+    //     raffle.tickets_sold
+    // }
 
     /// Finalizes a raffle and selects a winner.
     ///
@@ -457,8 +485,11 @@ impl Contract {
 
         // Add tickets to storage
         let mut tickets = read_tickets(&env, raffle_id);
-        for _ in 0..quantity {
+        let start_ticket_id = raffle.tickets_sold + 1;
+        let mut ticket_ids = Vec::new(&env);
+        for i in 0..quantity {
             tickets.push_back(buyer.clone());
+            ticket_ids.push_back(start_ticket_id + i);
         }
         write_tickets(&env, raffle_id, &tickets);
 
@@ -466,6 +497,22 @@ impl Contract {
         raffle.tickets_sold += quantity;
         write_ticket_count(&env, raffle_id, &buyer, current_count + quantity);
         write_raffle(&env, &raffle);
+
+        // Get timestamp
+        let timestamp = env.ledger().timestamp();
+
+        // Emit TicketPurchased event with all ticket IDs
+        env.events().publish(
+            (symbol_short!("TktPurch"),),
+            TicketPurchased {
+                raffle_id,
+                buyer: buyer.clone(),
+                ticket_ids,
+                quantity,
+                total_paid: total_cost,
+                timestamp,
+            },
+        );
 
         raffle.tickets_sold
     }
@@ -562,62 +609,147 @@ impl Contract {
 
     /// Retrieves all raffle IDs with pagination.
     ///
-    /// Pagination is applied after sorting. `offset` is the index within the
-    /// sorted list. `limit` is capped at 100.
+    /// # Arguments
+    /// * `offset` - The starting index within the sorted list
+    /// * `limit` - Maximum number of results (capped at 100)
+    /// * `newest_first` - If true, returns newest raffles first
+    ///
+    /// # Returns
+    /// * `PaginatedRaffleIds` - Paginated result with data and metadata
     pub fn get_all_raffle_ids(
         env: Env,
         offset: u32,
         limit: u32,
         newest_first: bool,
-    ) -> Vec<u64> {
+    ) -> PaginatedRaffleIds {
         let total = env
             .storage()
             .persistent()
             .get(&DataKey::NextRaffleId)
-            .unwrap_or(0u64);
-        let capped_limit = min(limit, 100u32);
-        let mut result = Vec::new(&env);
+            .unwrap_or(0u64) as u32;
+        let capped_limit = min(limit, MAX_PAGE_LIMIT);
+        let mut data = Vec::new(&env);
 
-        if capped_limit == 0 || total == 0 {
-            return result;
+        if capped_limit == 0 || total == 0 || offset >= total {
+            return PaginatedRaffleIds {
+                data,
+                meta: PaginationMeta {
+                    total,
+                    offset,
+                    limit: capped_limit,
+                    has_more: false,
+                },
+            };
         }
 
-        let offset_u64 = offset as u64;
-        if offset_u64 >= total {
-            return result;
-        }
-
-        let end = min(offset_u64 + capped_limit as u64, total);
+        let end = min(offset + capped_limit, total);
         if newest_first {
-            for position in offset_u64..end {
-                let raffle_id = total - 1 - position;
-                result.push_back(raffle_id);
+            for position in offset..end {
+                let raffle_id = (total - 1 - position) as u64;
+                data.push_back(raffle_id);
             }
         } else {
-            for raffle_id in offset_u64..end {
-                result.push_back(raffle_id);
+            for raffle_id in offset..end {
+                data.push_back(raffle_id as u64);
             }
         }
 
-        result
+        let has_more = end < total;
+
+        PaginatedRaffleIds {
+            data,
+            meta: PaginationMeta {
+                total,
+                offset,
+                limit: capped_limit,
+                has_more,
+            },
+        }
     }
 
-    /// Retrieves all ticket buyers for a raffle.
+    /// Retrieves all ticket buyers for a raffle with pagination.
     ///
     /// # Arguments
     /// * `raffle_id` - The ID of the raffle
+    /// * `offset` - The starting index
+    /// * `limit` - Maximum number of results (capped at 100)
     ///
     /// # Returns
-    /// * `Vec<Address>` - Vector of addresses representing ticket buyers
-    pub fn get_tickets(env: Env, raffle_id: u64) -> Vec<Address> {
-        read_tickets(&env, raffle_id)
+    /// * `PaginatedTickets` - Paginated result with data and metadata
+    pub fn get_tickets(env: Env, raffle_id: u64, offset: u32, limit: u32) -> PaginatedTickets {
+        let all_tickets = read_tickets(&env, raffle_id);
+        let total = all_tickets.len();
+        let capped_limit = min(limit, MAX_PAGE_LIMIT);
+        let mut data = Vec::new(&env);
+
+        if capped_limit == 0 || total == 0 || offset >= total {
+            return PaginatedTickets {
+                data,
+                meta: PaginationMeta {
+                    total,
+                    offset,
+                    limit: capped_limit,
+                    has_more: false,
+                },
+            };
+        }
+
+        let end = min(offset + capped_limit, total);
+        for i in offset..end {
+            data.push_back(all_tickets.get(i).unwrap());
+        }
+
+        let has_more = end < total;
+
+        PaginatedTickets {
+            data,
+            meta: PaginationMeta {
+                total,
+                offset,
+                limit: capped_limit,
+                has_more,
+            },
+        }
     }
 
-    pub fn get_active_raffle_ids(env: Env, offset: u32, limit: u32) -> Vec<u64> {
-        let capped_limit = if limit > 100 { 100 } else { limit };
+    /// Retrieves active raffle IDs with pagination.
+    ///
+    /// # Arguments
+    /// * `offset` - The starting index
+    /// * `limit` - Maximum number of results (capped at 100)
+    ///
+    /// # Returns
+    /// * `PaginatedRaffleIds` - Paginated result with data and metadata
+    pub fn get_active_raffle_ids(env: Env, offset: u32, limit: u32) -> PaginatedRaffleIds {
+        let capped_limit = min(limit, MAX_PAGE_LIMIT);
         let all_active = read_active_raffles(&env);
         let current_time = env.ledger().timestamp();
-        let mut result = Vec::new(&env);
+        
+        // First pass: count total active raffles
+        let mut total_active = 0u32;
+        for i in 0..all_active.len() {
+            let raffle_id = all_active.get(i).unwrap();
+            let raffle = read_raffle(&env, raffle_id);
+            if raffle.is_active && raffle.end_time > current_time {
+                total_active += 1;
+            }
+        }
+
+        let mut data = Vec::new(&env);
+        
+        if capped_limit == 0 || total_active == 0 || offset >= total_active {
+            return PaginatedRaffleIds {
+                data,
+                meta: PaginationMeta {
+                    total: total_active,
+                    offset,
+                    limit: capped_limit,
+                    has_more: false,
+                },
+            };
+        }
+
+        // Second pass: collect paginated results
         let mut count = 0u32;
         let mut skipped = 0u32;
 
@@ -633,12 +765,22 @@ impl Contract {
                     skipped += 1;
                     continue;
                 }
-                result.push_back(raffle_id);
+                data.push_back(raffle_id);
                 count += 1;
             }
         }
 
-        result
+        let has_more = (offset + count) < total_active;
+
+        PaginatedRaffleIds {
+            data,
+            meta: PaginationMeta {
+                total: total_active,
+                offset,
+                limit: capped_limit,
+                has_more,
+            },
+        }
     }
 }
 

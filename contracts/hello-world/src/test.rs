@@ -287,3 +287,148 @@ fn test_multiple_single_purchases_emit_multiple_events() {
     assert_eq!(e2.buyer, buyer2);
     assert_eq!(e2.ticket_ids.get(0).unwrap(), 2u32);
 }
+
+#[test]
+fn test_pagination_get_all_raffle_ids() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = token_contract.address();
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    // Create 5 raffles
+    for _ in 0..5 {
+        client.create_raffle(
+            &creator,
+            &String::from_str(&env, "Test Raffle"),
+            &0u64,
+            &10u32,
+            &true,
+            &1i128,
+            &token_id,
+            &10i128,
+        );
+    }
+
+    // Test offset 0, limit 3
+    let result = client.get_all_raffle_ids(&0, &3, &false);
+    assert_eq!(result.data.len(), 3);
+    assert_eq!(result.meta.total, 5);
+    assert_eq!(result.meta.offset, 0);
+    assert_eq!(result.meta.limit, 3);
+    assert!(result.meta.has_more);
+
+    // Test offset 3, limit 3 (should get 2 items)
+    let result = client.get_all_raffle_ids(&3, &3, &false);
+    assert_eq!(result.data.len(), 2);
+    assert_eq!(result.meta.total, 5);
+    assert_eq!(result.meta.offset, 3);
+    assert!(!result.meta.has_more);
+
+    // Test offset beyond total
+    let result = client.get_all_raffle_ids(&10, &3, &false);
+    assert_eq!(result.data.len(), 0);
+    assert_eq!(result.meta.total, 5);
+    assert!(!result.meta.has_more);
+
+    // Test newest_first
+    let result = client.get_all_raffle_ids(&0, &3, &true);
+    assert_eq!(result.data.get(0).unwrap(), 4u64); // newest first
+    assert_eq!(result.data.get(2).unwrap(), 2u64);
+}
+
+#[test]
+fn test_pagination_limit_enforced() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = token_contract.address();
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    // Create 5 raffles
+    for _ in 0..5 {
+        client.create_raffle(
+            &creator,
+            &String::from_str(&env, "Test Raffle"),
+            &0u64,
+            &10u32,
+            &true,
+            &1i128,
+            &token_id,
+            &10i128,
+        );
+    }
+
+    // Request limit > 100, should be capped
+    let result = client.get_all_raffle_ids(&0, &200, &false);
+    assert_eq!(result.meta.limit, 100); // Capped at 100
+}
+
+#[test]
+fn test_pagination_get_tickets() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = token_contract.address();
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    token_admin_client.mint(&creator, &1_000);
+    token_admin_client.mint(&buyer, &1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let raffle_id = client.create_raffle(
+        &creator,
+        &String::from_str(&env, "Ticket Test"),
+        &0u64,
+        &20u32,
+        &true,
+        &1i128,
+        &token_id,
+        &100i128,
+    );
+
+    // Buy 5 tickets
+    client.buy_tickets(&raffle_id, &buyer, &5);
+
+    // Test pagination on get_tickets
+    let result = client.get_tickets(&raffle_id, &0, &3);
+    assert_eq!(result.data.len(), 3);
+    assert_eq!(result.meta.total, 5);
+    assert!(result.meta.has_more);
+
+    let result = client.get_tickets(&raffle_id, &3, &3);
+    assert_eq!(result.data.len(), 2);
+    assert!(!result.meta.has_more);
+}
+
+#[test]
+fn test_pagination_empty_results() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    // Test with 0 raffles
+    let result = client.get_all_raffle_ids(&0, &10, &false);
+    assert_eq!(result.data.len(), 0);
+    assert_eq!(result.meta.total, 0);
+    assert!(!result.meta.has_more);
+}
