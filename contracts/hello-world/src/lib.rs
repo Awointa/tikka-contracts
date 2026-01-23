@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, String, Vec,
+    contract, contractevent, contractimpl, contracttype, token, Address, Env, String, Vec,
 };
 
 #[contract]
@@ -34,6 +34,42 @@ pub struct PrizeClaimed {
     pub net_amount: i128,
     pub platform_fee: i128,
     pub claimed_at: u64,
+}
+
+/// Event emitted when a new raffle is created.
+///
+/// This event provides all essential information about the raffle
+/// for frontend indexing and real-time updates.
+///
+/// # Topics
+/// - "RaffleCreated": Static event name for efficient filtering
+/// - raffle_id: Indexed for quick raffle lookups
+///
+/// # Fields
+/// * `raffle_id` - Unique identifier for the raffle
+/// * `creator` - Address of the raffle creator
+/// * `end_time` - Unix timestamp when the raffle ends
+/// * `max_tickets` - Maximum number of tickets available
+/// * `ticket_price` - Price per ticket in payment token units
+/// * `payment_token` - Address of the token used for payments
+/// * `description` - Human-readable description of the raffle
+///
+/// # Usage
+/// Frontends can listen for this event to:
+/// - Display newly created raffles immediately
+/// - Index raffle data for search and filtering
+/// - Trigger notifications to users
+/// - Populate raffle lists without querying all storage
+#[contractevent(topics = ["RaffleCreated", "raffle_id"])]
+#[derive(Clone)]
+pub struct RaffleCreated {
+    pub raffle_id: u64,
+    pub creator: Address,
+    pub end_time: u64,
+    pub max_tickets: u32,
+    pub ticket_price: i128,
+    pub payment_token: Address,
+    pub description: String,
 }
 
 #[derive(Clone)]
@@ -163,6 +199,17 @@ impl Contract {
             winner: None,
         };
         write_raffle(&env, &raffle);
+
+        RaffleCreated {
+            raffle_id,
+            creator,
+            end_time,
+            max_tickets,
+            ticket_price,
+            payment_token,
+            description,
+        }.publish(&env);
+
         raffle_id
     }
 
