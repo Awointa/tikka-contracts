@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, String, Vec,
+    contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec,
 };
 
 #[contract]
@@ -23,6 +23,30 @@ pub struct Raffle {
     pub prize_deposited: bool,
     pub prize_claimed: bool,
     pub winner: Option<Address>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+#[contracttype]
+pub enum RaffleStatus {
+    Active,
+    Finalized,
+    Claimed,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct RaffleStats {
+    pub tickets_sold: u32,
+    pub max_tickets: u32,
+    pub tickets_remaining: u32,
+    pub total_revenue: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct RaffleWithStats {
+    pub raffle: Raffle,
+    pub stats: RaffleStats,
 }
 
 #[derive(Clone)]
@@ -82,6 +106,34 @@ fn write_ticket_count(env: &Env, raffle_id: u64, buyer: &Address, count: u32) {
     env.storage()
         .persistent()
         .set(&DataKey::TicketCount(raffle_id, buyer.clone()), &count);
+}
+
+fn build_raffle_stats(raffle: &Raffle) -> RaffleStats {
+    let tickets_remaining = raffle
+        .max_tickets
+        .checked_sub(raffle.tickets_sold)
+        .unwrap_or_else(|| panic!("tickets_overflow"));
+    let total_revenue = raffle
+        .ticket_price
+        .checked_mul(raffle.tickets_sold as i128)
+        .unwrap_or_else(|| panic!("revenue_overflow"));
+
+    RaffleStats {
+        tickets_sold: raffle.tickets_sold,
+        max_tickets: raffle.max_tickets,
+        tickets_remaining,
+        total_revenue,
+    }
+}
+
+fn build_raffle_status(raffle: &Raffle) -> RaffleStatus {
+    if raffle.prize_claimed {
+        return RaffleStatus::Claimed;
+    }
+    if raffle.is_active {
+        return RaffleStatus::Active;
+    }
+    RaffleStatus::Finalized
 }
 
 fn next_raffle_id(env: &Env) -> u64 {
@@ -402,7 +454,7 @@ impl Contract {
 
         raffle.prize_claimed = true;
         write_raffle(&env, &raffle);
-        prize_amount
+        net_amount
     }
 
     /// Retrieves raffle information by ID.
@@ -417,6 +469,64 @@ impl Contract {
     /// * If the raffle does not exist
     pub fn get_raffle(env: Env, raffle_id: u64) -> Raffle {
         read_raffle(&env, raffle_id)
+    }
+
+    /// Retrieves raffle information by ID, including aggregated stats.
+    ///
+    /// # Arguments
+    /// * `raffle_id` - The ID of the raffle to retrieve
+    ///
+    /// # Returns
+    /// * `RaffleWithStats` - The raffle data structure and stats
+    ///
+    /// # Panics
+    /// * If the raffle does not exist
+    pub fn get_raffle_by_id(env: Env, raffle_id: u64) -> RaffleWithStats {
+        let raffle = read_raffle(&env, raffle_id);
+        let stats = build_raffle_stats(&raffle);
+        RaffleWithStats { raffle, stats }
+    }
+
+    /// Retrieves the number of tickets owned by a user for a raffle.
+    ///
+    /// # Arguments
+    /// * `raffle_id` - The ID of the raffle
+    /// * `user` - The address of the user
+    ///
+    /// # Returns
+    /// * `u32` - Number of tickets owned by the user
+    pub fn get_user_tickets(env: Env, raffle_id: u64, user: Address) -> u32 {
+        read_ticket_count(&env, raffle_id, &user)
+    }
+
+    /// Retrieves the status for a raffle.
+    ///
+    /// # Arguments
+    /// * `raffle_id` - The ID of the raffle
+    ///
+    /// # Returns
+    /// * `RaffleStatus` - Current status of the raffle
+    ///
+    /// # Panics
+    /// * If the raffle does not exist
+    pub fn get_raffle_status(env: Env, raffle_id: u64) -> RaffleStatus {
+        let raffle = read_raffle(&env, raffle_id);
+        build_raffle_status(&raffle)
+    }
+
+    /// Retrieves aggregated statistics for a raffle.
+    ///
+    /// # Arguments
+    /// * `raffle_id` - The ID of the raffle
+    ///
+    /// # Returns
+    /// * `RaffleStats` - Aggregated statistics for the raffle
+    ///
+    /// # Panics
+    /// * If the raffle does not exist
+    pub fn get_raffle_stats(env: Env, raffle_id: u64) -> RaffleStats {
+        let raffle = read_raffle(&env, raffle_id);
+        build_raffle_stats(&raffle)
     }
 
     /// Retrieves all ticket buyers for a raffle.

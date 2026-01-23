@@ -320,3 +320,94 @@ fn test_buy_tickets_allow_multiple_true_allows_multiple() {
     let initial_balance = token_client.balance(&buyer);
     assert_eq!(initial_balance, 10_000 - (5 * 10)); // 5 tickets × 10 price = 50
 }
+
+#[test]
+fn test_get_user_tickets_and_stats() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = token_contract.address();
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    token_admin_client.mint(&buyer, &1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let raffle_id = client.create_raffle(
+        &creator,
+        &String::from_str(&env, "Stats Raffle"),
+        &1000u64,
+        &10u32,
+        &true,
+        &20i128,
+        &token_id,
+        &200i128,
+    );
+
+    client.buy_tickets(&raffle_id, &buyer, &3u32);
+
+    let user_tickets = client.get_user_tickets(&raffle_id, &buyer);
+    let stats = client.get_raffle_stats(&raffle_id);
+    let raffle_with_stats = client.get_raffle_by_id(&raffle_id);
+
+    assert_eq!(user_tickets, 3);
+    assert_eq!(stats.tickets_sold, 3);
+    assert_eq!(stats.max_tickets, 10);
+    assert_eq!(stats.tickets_remaining, 7);
+    assert_eq!(stats.total_revenue, 60);
+    assert_eq!(raffle_with_stats.stats.tickets_sold, 3);
+    assert_eq!(raffle_with_stats.raffle.id, raffle_id);
+}
+
+#[test]
+fn test_get_raffle_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = token_contract.address();
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    token_admin_client.mint(&creator, &1_000);
+    token_admin_client.mint(&buyer, &1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let raffle_id = client.create_raffle(
+        &creator,
+        &String::from_str(&env, "Status Raffle"),
+        &0u64,
+        &5u32,
+        &true,
+        &10i128,
+        &token_id,
+        &100i128,
+    );
+
+    let status_active = client.get_raffle_status(&raffle_id);
+    assert_eq!(status_active, RaffleStatus::Active);
+
+    client.deposit_prize(&raffle_id);
+    client.buy_ticket(&raffle_id, &buyer);
+    client.finalize_raffle(&raffle_id);
+
+    let status_finalized = client.get_raffle_status(&raffle_id);
+    assert_eq!(status_finalized, RaffleStatus::Finalized);
+
+    let winner = client.get_raffle(&raffle_id).winner.unwrap();
+    client.claim_prize(&raffle_id, &winner);
+
+    let status_claimed = client.get_raffle_status(&raffle_id);
+    assert_eq!(status_claimed, RaffleStatus::Claimed);
+}
