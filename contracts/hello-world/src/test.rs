@@ -375,50 +375,6 @@ fn test_pagination_limit_enforced() {
 }
 
 #[test]
-fn test_pagination_get_tickets() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let creator = Address::generate(&env);
-    let buyer = Address::generate(&env);
-
-    let token_admin = Address::generate(&env);
-    let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_id = token_contract.address();
-    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
-
-    token_admin_client.mint(&creator, &1_000);
-    token_admin_client.mint(&buyer, &1_000);
-
-    let contract_id = env.register(Contract, ());
-    let client = ContractClient::new(&env, &contract_id);
-
-    let raffle_id = client.create_raffle(
-        &creator,
-        &String::from_str(&env, "Ticket Test"),
-        &0u64,
-        &20u32,
-        &true,
-        &1i128,
-        &token_id,
-        &100i128,
-    );
-
-    // Buy 5 tickets
-    client.buy_tickets(&raffle_id, &buyer, &5);
-
-    // Test pagination on get_tickets
-    let result = client.get_tickets(&raffle_id, &0, &3);
-    assert_eq!(result.data.len(), 3);
-    assert_eq!(result.meta.total, 5);
-    assert!(result.meta.has_more);
-
-    let result = client.get_tickets(&raffle_id, &3, &3);
-    assert_eq!(result.data.len(), 2);
-    assert!(!result.meta.has_more);
-}
-
-#[test]
 fn test_pagination_empty_results() {
     let env = Env::default();
     env.mock_all_auths();
