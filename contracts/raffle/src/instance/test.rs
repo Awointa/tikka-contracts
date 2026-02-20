@@ -159,6 +159,46 @@ fn test_vrf_raffle_flow() {
     assert_eq!(raffle_post.winner.unwrap(), expected_winner);
 }
 
+// --- 2. ERROR CONDITION TESTS ---
+
+#[test]
+#[should_panic] // Error(Contract, #5) - NotAuthorized
+fn test_unauthorized_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _, _) = setup_raffle_env(&env, RandomnessSource::Internal, None, 0, None);
+
+    let stranger = Address::generate(&env);
+    env.as_contract(&stranger, || {
+        client.deposit_prize();
+    });
+}
+
+#[test]
+#[should_panic] // Error(Contract, #20) - InvalidStateTransition (Buy before Active)
+fn test_invalid_state_transition_buy_before_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, buyer, _, _) =
+        setup_raffle_env(&env, RandomnessSource::Internal, None, 0, None);
+
+    client.buy_ticket(&buyer);
+}
+
+#[test]
+#[should_panic] // Error(Contract, #14) - MultipleTicketsNotAllowed
+fn test_multiple_tickets_prohibited() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, buyer, admin_client, _) =
+        setup_raffle_env(&env, RandomnessSource::Internal, None, 0, None);
+
+    client.deposit_prize();
+    admin_client.mint(&buyer, &20i128);
+    client.buy_ticket(&buyer);
+    client.buy_ticket(&buyer); // Should fail
+}
+
 // --- 3. EVENT AUDIT & STATE VALIDATION ---
 
 #[test]
