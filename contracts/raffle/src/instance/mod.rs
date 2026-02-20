@@ -8,6 +8,17 @@ use soroban_sdk::{
 #[contract]
 pub struct Contract;
 
+#[derive(Clone, PartialEq, Eq)]
+#[contracttype]
+pub enum RaffleStatus {
+    Proposed = 0,
+    Active = 1,
+    Drawing = 2,
+    Finalized = 3,
+    Claimed = 4,
+    Cancelled = 5,
+}
+
 #[derive(Clone)]
 #[contracttype]
 pub struct Raffle {
@@ -20,20 +31,9 @@ pub struct Raffle {
     pub payment_token: Address,
     pub prize_amount: i128,
     pub tickets_sold: u32,
-    pub is_active: bool,
+    pub status: RaffleStatus,
     pub prize_deposited: bool,
-    pub prize_claimed: bool,
     pub winner: Option<Address>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-#[contracttype]
-pub enum RaffleStatus {
-    Proposed,
-    Active,
-    Drawing,
-    Finalized,
-    Claimed,
 }
 
 #[derive(Clone)]
@@ -97,6 +97,14 @@ pub struct TicketPurchased {
     pub timestamp: u64,
 }
 
+#[contractevent(topics = ["StatusChanged"])]
+#[derive(Clone)]
+pub struct StatusChanged {
+    pub old_status: RaffleStatus,
+    pub new_status: RaffleStatus,
+    pub timestamp: u64,
+}
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -132,9 +140,8 @@ pub enum Error {
     ArithmeticOverflow = 17,
     AlreadyInitialized = 18,
     NotInitialized = 19,
+    InvalidStateTransition = 20,
 }
-
-const MAX_PAGE_LIMIT: u32 = 100;
 
 fn read_raffle(env: &Env) -> Result<Raffle, Error> {
     env.storage()
@@ -232,9 +239,8 @@ impl Contract {
             payment_token: payment_token.clone(),
             prize_amount,
             tickets_sold: 0,
-            is_active: true,
+            status: RaffleStatus::Proposed,
             prize_deposited: false,
-            prize_claimed: false,
             winner: None,
         };
         write_raffle(&env, &raffle);
@@ -256,8 +262,9 @@ impl Contract {
     pub fn deposit_prize(env: Env) -> Result<(), Error> {
         let mut raffle = read_raffle(&env)?;
         raffle.creator.require_auth();
-        if !raffle.is_active {
-            return Err(Error::RaffleInactive);
+
+        if raffle.status != RaffleStatus::Proposed {
+            return Err(Error::InvalidStateTransition);
         }
         if raffle.prize_deposited {
             return Err(Error::PrizeAlreadyDeposited);
@@ -268,17 +275,28 @@ impl Contract {
         token_client.transfer(&raffle.creator, &contract_address, &raffle.prize_amount);
 
         raffle.prize_deposited = true;
+        raffle.status = RaffleStatus::Active;
         write_raffle(&env, &raffle);
+
+        StatusChanged {
+            old_status: RaffleStatus::Proposed,
+            new_status: RaffleStatus::Active,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
         Ok(())
     }
 
     pub fn buy_ticket(env: Env, buyer: Address) -> Result<u32, Error> {
         buyer.require_auth();
         let mut raffle = read_raffle(&env)?;
-        if !raffle.is_active {
+
+        if raffle.status != RaffleStatus::Active {
             return Err(Error::RaffleInactive);
         }
         if raffle.end_time != 0 && env.ledger().timestamp() > raffle.end_time {
+            // Auto-transition to Drawing if time passed and somebody calls buy_ticket (or just fail)
             return Err(Error::RaffleEnded);
         }
         if raffle.tickets_sold >= raffle.max_tickets {
@@ -310,6 +328,18 @@ impl Contract {
         write_tickets(&env, &tickets);
 
         raffle.tickets_sold += 1;
+
+        // If sold out, transition to Drawing
+        if raffle.tickets_sold >= raffle.max_tickets {
+            raffle.status = RaffleStatus::Drawing;
+            StatusChanged {
+                old_status: RaffleStatus::Active,
+                new_status: RaffleStatus::Drawing,
+                timestamp: env.ledger().timestamp(),
+            }
+            .publish(&env);
+        }
+
         write_ticket_count(&env, &buyer, current_count + 1);
         write_raffle(&env, &raffle);
 
@@ -331,12 +361,20 @@ impl Contract {
     pub fn finalize_raffle(env: Env, source: String) -> Result<Address, Error> {
         let mut raffle = read_raffle(&env)?;
         raffle.creator.require_auth();
-        if !raffle.is_active {
-            return Err(Error::RaffleInactive);
+
+        // Ensure Drawing state
+        if raffle.status == RaffleStatus::Active {
+            if raffle.end_time != 0 && env.ledger().timestamp() >= raffle.end_time {
+                raffle.status = RaffleStatus::Drawing;
+            } else if raffle.tickets_sold >= raffle.max_tickets {
+                raffle.status = RaffleStatus::Drawing;
+            }
         }
-        if raffle.end_time != 0 && env.ledger().timestamp() < raffle.end_time {
-            return Err(Error::RaffleStillRunning);
+
+        if raffle.status != RaffleStatus::Drawing {
+            return Err(Error::InvalidStateTransition);
         }
+
         if raffle.tickets_sold == 0 {
             return Err(Error::NoTicketsSold);
         }
@@ -346,7 +384,7 @@ impl Contract {
         let winner_index = (seed % tickets.len() as u64) as u32;
         let winner = tickets.get(winner_index).unwrap();
 
-        raffle.is_active = false;
+        raffle.status = RaffleStatus::Finalized;
         raffle.winner = Some(winner.clone());
         write_raffle(&env, &raffle);
 
@@ -359,20 +397,28 @@ impl Contract {
         }
         .publish(&env);
 
+        StatusChanged {
+            old_status: RaffleStatus::Drawing,
+            new_status: RaffleStatus::Finalized,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
         Ok(winner)
     }
 
     pub fn claim_prize(env: Env, winner: Address) -> Result<i128, Error> {
         winner.require_auth();
         let mut raffle = read_raffle(&env)?;
+
+        if raffle.status != RaffleStatus::Finalized {
+            return Err(Error::InvalidStateTransition);
+        }
         if raffle.winner != Some(winner.clone()) {
             return Err(Error::NotWinner);
         }
         if !raffle.prize_deposited {
             return Err(Error::PrizeNotDeposited);
-        }
-        if raffle.prize_claimed {
-            return Err(Error::PrizeAlreadyClaimed);
         }
 
         let net_amount = raffle.prize_amount;
@@ -381,6 +427,9 @@ impl Contract {
         let token_client = token::Client::new(&env, &raffle.payment_token);
         let contract_address = env.current_contract_address();
         token_client.transfer(&contract_address, &winner, &net_amount);
+
+        raffle.status = RaffleStatus::Claimed;
+        write_raffle(&env, &raffle);
 
         PrizeClaimed {
             winner: winner.clone(),
@@ -391,9 +440,49 @@ impl Contract {
         }
         .publish(&env);
 
-        raffle.prize_claimed = true;
-        write_raffle(&env, &raffle);
+        StatusChanged {
+            old_status: RaffleStatus::Finalized,
+            new_status: RaffleStatus::Claimed,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
         Ok(net_amount)
+    }
+
+    pub fn cancel_raffle(env: Env) -> Result<(), Error> {
+        let mut raffle = read_raffle(&env)?;
+        raffle.creator.require_auth();
+
+        if raffle.status == RaffleStatus::Finalized
+            || raffle.status == RaffleStatus::Claimed
+            || raffle.status == RaffleStatus::Cancelled
+        {
+            return Err(Error::InvalidStateTransition);
+        }
+
+        let old_status = raffle.status.clone();
+        raffle.status = RaffleStatus::Cancelled;
+
+        // If prize was deposited, creator can take it back immediately or we can add a withdraw function
+        // For simplicity, we just change status and let creator know they can have their prize if deposited
+        if raffle.prize_deposited {
+            let token_client = token::Client::new(&env, &raffle.payment_token);
+            let contract_address = env.current_contract_address();
+            token_client.transfer(&contract_address, &raffle.creator, &raffle.prize_amount);
+            raffle.prize_deposited = false;
+        }
+
+        write_raffle(&env, &raffle);
+
+        StatusChanged {
+            old_status,
+            new_status: RaffleStatus::Cancelled,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     pub fn get_raffle(env: Env) -> Result<Raffle, Error> {
